@@ -331,6 +331,62 @@ class DocxReviser:
 
         return True
 
+    def _replace_range_full(self, para, start_idx, old_text, new_text):
+        """Replace a range as one whole deletion and one whole insertion."""
+        end_idx = start_idx + len(old_text)
+        entries = self._run_entries(para)
+        if not entries:
+            return False
+
+        start_entry = end_entry = None
+        for i, entry in enumerate(entries):
+            if entry['t'] is not None and entry['start'] <= start_idx < entry['end']:
+                start_entry = i
+            if entry['t'] is not None and entry['start'] < end_idx <= entry['end']:
+                end_entry = i
+                break
+            if entry['t'] is not None and end_idx == entry['end'] and entry['start'] < entry['end']:
+                end_entry = i
+                break
+
+        if start_entry is None or end_entry is None:
+            return False
+
+        first = entries[start_entry]
+        last = entries[end_entry]
+        parent = first['run'].getparent()
+        insert_at = list(parent).index(first['run'])
+
+        before = self._runs_for_text_range(entries, first['start'], start_idx)
+        after = self._runs_for_text_range(entries, end_idx, last['end'])
+
+        # Collect runs for the whole old_text range, preserving original formatting.
+        old_runs = self._runs_for_text_range(entries, start_idx, end_idx)
+
+        for i in range(end_entry, start_entry - 1, -1):
+            run = entries[i]['run']
+            run.getparent().remove(run)
+
+        for run in before:
+            parent.insert(insert_at, run)
+            insert_at += 1
+
+        if old_runs:
+            parent.insert(insert_at, self._make_del(old_runs, self._next_rev_id()))
+            insert_at += 1
+
+        if new_text:
+            rpr = self._rpr_at_or_before(entries, start_idx)
+            ins_runs = self._make_runs_from_text(new_text, rpr)
+            parent.insert(insert_at, self._make_ins(ins_runs, self._next_rev_id()))
+            insert_at += 1
+
+        for run in after:
+            parent.insert(insert_at, run)
+            insert_at += 1
+
+        return True
+
     def _insert_text_at(self, para, offset, text):
         entries = self._run_entries(para)
         if not entries:
@@ -402,6 +458,27 @@ class DocxReviser:
             raise ValueError(f"Text not found: {old_text}")
         return True
 
+    def replace_text_full(self, find, replace, replace_all=False):
+        """Replace exact text as one whole deletion and one whole insertion."""
+        found_any = False
+        for para in self._all_paragraphs():
+            while True:
+                text = self._para_text(para)
+                if find not in text:
+                    break
+                start_idx = text.index(find)
+                result = self._replace_range_full(para, start_idx, find, replace)
+                if not result:
+                    break
+                found_any = True
+                if not replace_all:
+                    return True
+                if find in replace:
+                    break
+        if not found_any:
+            raise ValueError(f"Text not found: {find}")
+        return True
+
     def insert_text_after(self, anchor, insert, replace_all=False):
         found_any = False
         for para in self._all_paragraphs():
@@ -455,6 +532,40 @@ class DocxReviser:
         idx = list(parent).index(para)
         parent.remove(para)
         parent.insert(idx, new_p)
+
+    def delete_paragraph(self, find, startswith=False):
+        """Delete entire paragraph as a revision: deleted runs + deleted paragraph mark.
+
+        Word removes the paragraph entirely when the change is accepted,
+        so no empty line is left behind.
+        """
+        para = self._find_para(find, startswith)
+        if para is None:
+            raise ValueError(f"Paragraph not found: {find}")
+        if para.xpath('.//w:ins | .//w:del | .//w:moveFrom | .//w:moveTo', namespaces={'w': W}):
+            raise ValueError("Paragraph contains existing revision marks; refusing deletion")
+
+        rev_id = self._next_rev_id()
+        editable_runs = [r for r in para.findall('.//' + wtag('r')) if not _is_under_revision(r)]
+        old_runs = [deepcopy(r) for r in editable_runs]
+        for r in editable_runs:
+            r.getparent().remove(r)
+        if old_runs:
+            para.append(self._make_del(old_runs, rev_id))
+
+        # Mark the paragraph mark itself as deleted (w:pPr/w:rPr/w:del).
+        ppr = para.find(wtag('pPr'))
+        if ppr is None:
+            ppr = etree.Element(wtag('pPr'))
+            para.insert(0, ppr)
+        rpr = ppr.find(wtag('rPr'))
+        if rpr is None:
+            rpr = etree.SubElement(ppr, wtag('rPr'))
+        d = etree.Element(wtag('del'))
+        d.set(wtag('id'), str(rev_id))
+        d.set(wtag('author'), self.author)
+        d.set(wtag('date'), self.revision_date)
+        rpr.insert(0, d)
 
     def _remove_numpr(self, ppr):
         if ppr is not None:

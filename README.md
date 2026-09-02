@@ -28,7 +28,7 @@ npx skills install LawyerYuan/word-revision -g
 **Claude Code：**
 
 ```bash
-git clone https://github.com/LawyerYuan/word-revision.git ~/.claude/skills/word-revision
+git clone https://github.com/LawyerYuan/word-revision.git ~/.codex/skills/word-revision
 ```
 
 **Codex：**
