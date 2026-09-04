@@ -2,6 +2,20 @@
 
 Add Word Track Changes revision marks to .docx files while preserving existing formatting.
 
+## 使用流程速览
+
+> 流程图是快速入口；完整参数、边界和错误处理以 `SKILL.md` 为准。
+
+```mermaid
+flowchart TD
+  A["确认原始 DOCX、修改目标和输出路径"] --> B["选择替换、插入或删除操作"]
+  B --> C["确定处理的 Word 部件"]
+  C --> D["生成 Track Changes 修订脚本"]
+  D --> E["写入新增、删除和替换痕迹"]
+  E --> F["验证修订 XML、格式和原文保留"]
+  F --> G["输出独立修订稿"]
+```
+
 ## 应用场景
 
 `word-revision` 适合需要把文本修改以 Word 修订痕迹（Track Changes）方式写入 `.docx` 的场景，典型用途包括：
