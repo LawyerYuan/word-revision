@@ -1,138 +1,129 @@
 ---
 name: word-revision
-description: Add Word Track Changes revision marks to .docx files while preserving existing formatting.
+description: Use when the user wants changes applied to an existing .docx as Word Track Changes (修订模式、留痕修改、修订痕迹、红线、track changes, redline) — replacing, inserting or deleting text or paragraphs in a contract or other Word document while keeping its formatting and any existing revisions. Not for drafting a new document from a template (contract-draft) or for a full contract risk review (contract-review).
 ---
 
 # word-revision — Word Track Changes for DOCX
 
-Apply edits to `.docx` files as Word Track Changes without rebuilding the document from plain text.
+Apply edits to `.docx` files as Word Track Changes without rebuilding the document. Shared text stays normal; only real insertions and deletions become revision marks.
 
-**Default strategy**: use fine-grained revisions. Keep unchanged text as normal text, and mark only actual insertions, deletions, and replacements. Use full-paragraph replacement only when a paragraph is genuinely rewritten.
-
-**Usage**: `python3 word_reviser.py [--author NAME] [--parts PARTS] <input.docx> <output.docx> <command> [args...]`
-
-**Default revision author**: `Agent`
-
----
+- `<skill-dir>` below = the "Base directory for this skill" shown when this skill loads. Always use that absolute path; run the script with `python3`.
+- Default revision author is `Agent` (`--author NAME` / `author=`). Revision dates are the current Beijing time with an explicit `+08:00` offset.
+- `.doc` is not supported; save it as `.docx` first.
 
 ## Workflow
 
-### 1. Confirm Inputs
+1. Confirm the source is `.docx` and collect the exact edits. Copy the target text from the document itself (full-width punctuation, spaces); do not retype it.
+2. Put all edits in one `edits.json` and preview them:
+   `python3 <skill-dir>/word_reviser.py in.docx out.docx apply edits.json --dry-run`
+   Each result lists the matches it found; check they are the intended places.
+3. Apply with the same command without `--dry-run`. The JSON report gives a status per edit.
+   - exit 0: all edits applied and saved.
+   - exit 1: at least one edit failed and nothing was written. Fix the failed edits using their `error` / `suggestions`, then rerun.
+   - `--keep-going`: save the successful edits anyway; exit 2 if any failed.
+4. Validate (below) and tell the user what changed.
 
-1. Confirm the source file is `.docx`.
-2. Confirm the requested text edits.
-3. If the target text may be outside the main document body, identify the needed parts.
+## Choosing the operation
 
-### 2. Choose Revision Operation
-
-| User intent | Operation | Method |
+| Intent | batch `op` / Python method | Notes |
 |---|---|---|
-| Replace short text | Fine-grained replacement | `replace_text(find, replace)` |
-| Replace a whole old clause with a whole new clause | Fine-grained diff replacement | `replace_text_smart(old_text, new_text)` |
-| Replace every occurrence | Batch replacement | `replace_text(find, replace, replace_all=True)` |
-| Add text after a sentence | Inline insertion | `insert_text_after(anchor, insert)` |
-| Add a new paragraph after a clause | Paragraph insertion | `insert_after(find, new_text, startswith=True)` |
-| Add title + body paragraphs | Multi-paragraph insertion | `insert_multiple_after(find, [title, body], bolds=[True, False])` |
-| Rewrite a paragraph | Full paragraph replacement | `replace_paragraph(find, new_text, startswith=True)` |
+| Change words, dates, amounts, names | `replace` / `replace_text(find, replace)` | Character diff; shared text stays unmarked |
+| Old clause → new clause | `smart_replace` / `replace_text_smart(old_text, new_text)` | Same diff; one call per sentence |
+| One whole deletion + one insertion | `replace_full` / `replace_text_full(find, replace)` | |
+| Add words after a phrase | `insert_text_after` / `insert_text_after(anchor, insert)` | |
+| New paragraph(s) after a paragraph | `insert_after` / `insert_after(find, new_text, startswith=True)` | Copies the paragraph style, drops list numbering |
+| Heading + body paragraphs | `insert_multiple_after` / `insert_multiple_after(find, [title, body], bolds=[True, False])` | `bold`: None inherits, True / False force it |
+| Rewrite a whole paragraph | `replace_paragraph` / `replace_paragraph(find, new_text, startswith=True)` | Only for genuine rewrites; keeps bookmarks and comments |
+| Delete a paragraph | `delete_paragraph` / `delete_paragraph(find, startswith=True)` | Accepting leaves no empty line |
 
-**Preflight rules**:
-- Prefer `replace_text`, `replace_text_smart`, `insert_text_after`, or `insert_after`.
-- If the user provides "old whole clause -> new whole clause", use `replace_text_smart`.
-- Use `replace_paragraph` only when structure and meaning are rewritten enough that stable local diff is not appropriate.
-- Do not use `replace_paragraph` for a few words, dates, amounts, entity names, or a one-sentence supplement.
-- Existing revision marks (`w:ins`, `w:del`, `w:moveFrom`, `w:moveTo`) must remain unchanged. Do not alter their text, author, date, or id.
+- Every occurrence: `"replace_all": true` (non-overlapping, left to right, never re-matches its own output; methods return the count).
+- One specific occurrence: `"occurrence": N` (1-based, document order). Without either, only the first match changes and a warning reports the total.
+- `\n` in new text is a paragraph break (^p); `\t` becomes a real tab. The tool never writes manual line breaks (`w:br`).
 
-### 3. Select Word Parts
-
-By default, only the main document body is edited:
-
-```python
-reviser = DocxReviser("input.docx")
+```json
+[
+  {"op": "replace", "find": "3日内", "replace": "5个工作日内"},
+  {"op": "replace", "find": "甲方", "replace": "甲方（买方）", "replace_all": true},
+  {"op": "insert_after", "find": "1.1", "new_text": "1.2 新增条款……", "startswith": true},
+  {"op": "delete_paragraph", "find": "第十条", "startswith": true, "occurrence": 2}
+]
 ```
 
-To edit other Word parts, pass `parts`:
+Edit fields are the Python parameter names. Single edits also work as CLI commands; see `python3 <skill-dir>/word_reviser.py --help`.
 
-```python
-reviser = DocxReviser("input.docx", parts=["document", "headers", "footers"])
-reviser = DocxReviser("input.docx", parts="all")
-```
-
-Supported part names:
-
-- `document`
-- `headers`
-- `footers`
-- `footnotes`
-- `endnotes`
-- `comments`
-
-Missing optional parts are skipped. Unknown part names raise `ValueError`.
-
-### 4. Generate Revision Script
+## Python API
 
 ```python
 import sys
-sys.path.insert(0, ".")
+sys.path.insert(0, "<skill-dir>")  # the absolute skill path, never "."
 from word_reviser import DocxReviser
 
-reviser = DocxReviser("input.docx", author="Agent")
-
-reviser.replace_text("old text", "old text plus new words")
-reviser.replace_text_smart("old whole clause...", "new whole clause...")
-reviser.insert_text_after("anchor text", " inserted text")
-reviser.insert_after("1.1", "1.2 New clause...", startswith=True)
-reviser.insert_multiple_after(
-    "2. Existing clause",
-    ["New heading", "New body text."],
-    bolds=[True, False],
-)
-
-# Use only when the entire paragraph is genuinely rewritten.
-reviser.replace_paragraph("3.1", "3.1 Completely rewritten text...", startswith=True)
-
-total = reviser.save("input_revised.docx")
-print(f"Saved revised file with {total} revision marks")
+with DocxReviser("input.docx", author="Agent") as r:
+    r.replace_text("3日内", "5个工作日内")
+    r.replace_text("甲方", "甲方（买方）", replace_all=True)
+    r.insert_after("1.1", "1.2 新增条款……", startswith=True)
+    results = r.apply_edits([{"op": "replace", "find": "乙方", "replace": "卖方"}])  # same format as edits.json
+    total = r.save("input_revised.docx")  # atomic write; returns the revision mark count
 ```
 
-### 5. Validate
+Constructor options:
+- `parts`: `"document"` by default. Also `headers`, `footers`, `footnotes`, `endnotes`, `comments`, or `"all"`.
+- `include_toc=False`: table-of-contents paragraphs are skipped by default.
+- `merge_short_equal=2`: equal islands of up to 2 characters between two changes are folded into one replacement, so redlines read as whole phrases. `0` keeps character-level marks.
 
-Run the regression tests after changing `word_reviser.py`:
+## Matching rules
+
+- Text matches inside one paragraph, against untracked text only. Tabs, field codes, footnote and comment references and images do not count as text, and they stay in place.
+- A match cannot cross a hyperlink, content control, field or text-box boundary; the tool refuses it and says why.
+- Text inside existing revisions cannot be matched and is never altered. This includes text inserted earlier in the same session, so plan every edit against the original text. For several changes in one sentence, use a single `replace_text_smart` covering the whole sentence.
+- Automatic list numbering ("1.1", "第三条" generated by Word) is not part of the text.
+- A "not found" error lists the closest paragraph text and likely causes (full/half-width characters, numbering, revisions); act on those rather than guessing.
+
+## Validate
+
+After changing `word_reviser.py`:
 
 ```bash
-python3 -m py_compile word_reviser.py
-python3 tests/test_word_reviser.py
+python3 <skill-dir>/tests/test_word_reviser.py
 ```
 
-For a generated file, inspect XML counts:
+`save()` warns about bad deleted text automatically. To inspect an output file:
 
 ```bash
 python3 - <<'PY'
+from collections import Counter
 from zipfile import ZipFile
 from lxml import etree
 docx = "output.docx"
-W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-ns = {"w": W}
+ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 root = etree.fromstring(ZipFile(docx).read("word/document.xml"))
-print("w:ins", len(root.xpath(".//w:ins", namespaces=ns)))
-print("w:del", len(root.xpath(".//w:del", namespaces=ns)))
-print("bad w:del//w:t", len(root.xpath(".//w:del//w:t", namespaces=ns)))
-print("w:del//w:delText", len(root.xpath(".//w:del//w:delText", namespaces=ns)))
+ids = root.xpath("//w:ins/@w:id | //w:del/@w:id", namespaces=ns)
+print("w:ins", len(root.xpath("//w:ins", namespaces=ns)), "w:del", len(root.xpath("//w:del", namespaces=ns)))
+print("duplicate ids", [i for i, n in Counter(ids).items() if n > 1])
+print("bad w:del//w:t", len(root.xpath("//w:del//w:t[not(ancestor::w:txbxContent)]", namespaces=ns)))
 PY
 ```
 
-`bad w:del//w:t` must be `0`.
+`duplicate ids` must be `[]` and `bad w:del//w:t` must be `0`.
 
----
+## Common mistakes
 
-## Technical Constraints
+| Symptom | Fix |
+|---|---|
+| `Text not found` | Copy the exact characters from the document, drop auto-numbering, read the suggestions in the error |
+| Edit landed in the table of contents or the wrong clause | Use `occurrence`, a longer anchor, and keep `include_toc=False` |
+| A second edit to the same sentence is not found | The first edit's text is now a revision; combine both into one `replace_text_smart` |
+| `ModuleNotFoundError: word_reviser` | `sys.path.insert(0, "<skill-dir>")` with the absolute path |
+| `match crosses a w:hyperlink boundary` | Edit the text inside and outside the container separately |
+| One failure aborted a long script | Use batch `apply`; each edit succeeds or fails on its own |
 
-1. **Format preservation**: edits operate on OOXML runs/paragraphs, not plain-text document reconstruction.
-2. **Fine-grained visual revisions**: shared text remains normal; only actual changes become revision marks.
-3. **Existing revision protection**: existing `w:ins`, `w:del`, `w:moveFrom`, and `w:moveTo` are skipped and preserved.
-4. **Deletion standard**: deleted text inside `w:del` must use `w:delText`, not `w:t`.
-5. **Line breaks**: `\n` becomes `w:br`.
-6. **Table support**: table cell paragraphs are supported.
-7. **Part support**: main body, headers, footers, footnotes, endnotes, and comments can be selected.
-8. **List behavior**: inserted paragraphs remove copied `w:numPr` to avoid unexpected automatic numbering.
-9. **Unsupported format**: `.doc` is not supported; save as `.docx` first.
-10. **Unsupported objects**: the tool does not intentionally edit field instructions, images, OLE objects, relationship files, or drawing objects beyond ordinary `w:p/w:r/w:t` text available in selected parts.
+## Technical constraints
+
+1. **Format preservation**: edits operate on OOXML runs and paragraphs; run properties are copied, nothing is rebuilt from plain text.
+2. **Existing revisions** (`w:ins`, `w:del`, `w:moveFrom`, `w:moveTo`) keep their text, author, date and id. `replace_paragraph` and `delete_paragraph` refuse paragraphs that contain them.
+3. **Deletions** use `w:delText` (and `w:delInstrText` for field codes), never `w:t`.
+4. **Paragraph marks are tracked**: Reject All restores the original document exactly, including paragraphs split by `\n`.
+5. **Revision ids** start above every `w:id` already in the package, so they never collide.
+6. **New paragraphs** never copy section breaks or other people's revisions. `insert_after` drops list numbering, and inserting after a section's last paragraph starts the next section (with a warning).
+7. **Tables, headers, footers, footnotes, endnotes and comments** are supported through `parts`.
+8. **Unsupported**: `.doc` files; editing field instructions, images, OLE objects and drawings.
