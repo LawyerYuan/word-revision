@@ -1,29 +1,25 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.pytest_cache/
-
-# macOS
 .DS_Store
-
-# Editor / IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Environment / secrets
 .env
 .env.*
-*.local
-
-# Build artifacts
+!.env.example
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+*.py[cod]
+*.bak
+*.log
+node_modules/
 dist/
 build/
-*.egg-info/
+output/
+outputs/
+tmp/
+temp/
+projects/
+*.local.*
+!*.example.*
+config.local.*
+*.local.json
+sender_config.json
+clients.md
 
-# Test outputs / logs
-*.log
